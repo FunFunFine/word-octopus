@@ -10,6 +10,7 @@ namespace WordSearcher
     {
         static void Main(string[] args)
         {
+
         }
     }
 }
