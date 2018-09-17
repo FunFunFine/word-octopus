@@ -1,12 +1,14 @@
-﻿using System;
-using System.Collections.Generic;
-using System.Linq;
-using Newtonsoft.Json;
+﻿using Newtonsoft.Json;
 using RestSharp;
+using RestSharp.Deserializers;
+using System;
+using System.Collections.Generic;
+using System.Net;
+using System.Web;
 
 namespace WordSearcher
 {
-    public class Api : IDisposable
+    public class Api
     {
         private readonly string _authKey;
         private readonly RestClient _client;
@@ -15,45 +17,81 @@ namespace WordSearcher
         {
             _authKey = authKey;
             _client = new RestClient(serverUri);
-            _client.AddHandler("application/json", new RestSharp.Deserializers.JsonDeserializer());
+            _client.AddHandler("application/json", new JsonDeserializer());
         }
-
-        public void Close()
+        public bool Connect()
         {
-            var request = new RestRequest("/task/game/finish") { Method = Method.POST };
-            request.AddHeader("Authorization", "token " + _authKey);
-            var response = _client.Execute(request);
-
-
+            SendRequest("/task/game/start/",out var success);
+            return success;
         }
 
-        private enum Side
+        public bool[,] MoveUp()
         {
-            Up, Down, Left, Right
+            return Move(Side.Up);
         }
 
-        public bool[,] MoveUp() => Move(Side.Up);
-        public bool[,] MoveDown() => Move(Side.Down);
-        public bool[,] MoveLeft() => Move(Side.Left);
-        public bool[,] MoveRight() => Move(Side.Right);
+        public bool[,] MoveDown()
+        {
+            return Move(Side.Down);
+        }
 
+        public bool[,] MoveLeft()
+        {
+            return Move(Side.Left);
+        }
 
+        public bool[,] MoveRight()
+        {
+            return Move(Side.Right);
+        }
+
+        public Stats GetStats()
+        {
+            var response = SendRequest("/task/game/stats/", out _, Method.GET);
+            return ParseStats(response);
+        }
+
+        public Stats SendWords(IEnumerable<string> words)
+        {
+            var response = SendRequest("/task/words/",out _, body: words);
+            return ParseStats(response, false);
+        }
+
+        public Stats Close()
+        {
+            var response = SendRequest("/task/game/finish", out _);
+            return ParseStats(response, false);
+        }
+
+        
         private bool[,] Move(Side side)
         {
             var sideName = Enum.GetName(typeof(Side), side)?.ToLower();
-            if (sideName == null)
-                throw new ArgumentException("Wrong side");
-            var request = new RestRequest($"/task/move/{sideName}") { Method = Method.POST };
-            request.AddHeader("Authorization", "token " + _authKey);
-            var response = _client.Execute(request);
-            var field = ParseField(response.Content.Substring(1).Substring(0, response.Content.Length - 2));
+            var content = SendRequest($"/task/move/{sideName}", out _);
+            var field = ParseField(content);
             return field;
         }
 
-        public static bool[,] ParseField(string content)
+        private string SendRequest(string path, out bool success, Method method = Method.POST, object body = null)
         {
-            var body = content.Split(new[] { "\\r\\n" }, StringSplitOptions.None);
+            var request = new RestRequest(path)
+            {
+                Method = method
+            };
+            request.AddHeader("Authorization", $"token {_authKey}");
+            if (body != null)
+                request.AddJsonBody(body);
+            var response = _client.Execute(request);
+            success = response.StatusCode == HttpStatusCode.OK;
+            return success 
+                ? response.Content 
+                : throw new HttpException((int)response.StatusCode, response.ErrorMessage);
+        }
 
+        private static bool[,] ParseField(string content)
+        {
+            var body = content.Substring(1, content.Length - 2)
+                              .Split(new[] { "\\r\\n" }, StringSplitOptions.None);
             var height = body.Length;
             var width = body[0].Length;
             var field = new bool[width, height];
@@ -62,47 +100,27 @@ namespace WordSearcher
                 for (var x = 0; x < width; x++)
                     field[x, y] = body[y][x] == '1';
             }
-
             return field;
         }
-
-
-
-        public Stats GetStats()
+        
+        private static Stats ParseStats(string content, bool fullStat = true)
         {
-            var request = new RestRequest("/task/game/stats") { Method = Method.GET };
-            request.AddHeader("Authorization", "token " + _authKey);
-            var response = _client.Execute(request);
-            var statsJson = response.Content;
-            var stats = JsonConvert.DeserializeObject<Dictionary<string, int>>(statsJson);
-            return new Stats(stats["words"], stats["points"], stats["moves"]);
-
-        }
-        public void Connect()
+            var stats = JsonConvert.DeserializeObject<Dictionary<string, int>>(content);
+            return fullStat
+                ? new Stats(stats["words"], stats["points"], stats["moves"])
+                : new Stats(stats["points"]);
+        }        
+        
+        private enum Side
         {
-
-            var request = new RestRequest("/task/game/start") { Method = Method.POST };
-            request.AddHeader("Authorization", "token " + _authKey);
-            request.AddParameter("test", true);
-            var response = _client.Execute(request);
+            Up,
+            Down,
+            Left,
+            Right
         }
 
-        public Stats SendWords(IEnumerable<string> words)
-        {
-            var wordsJson = JsonConvert.SerializeObject(words.ToList());
-            var request = new RestRequest("/task/words/") { Method = Method.POST };
-            request.AddHeader("Authorization", "token " + _authKey);          
-            request.AddJsonBody(words);
-            var response = _client.Execute(request);
-            var stats = JsonConvert.DeserializeObject<Dictionary<string, int>>(response.Content);
-            return new Stats(stats["points"]);
-        }
         public class Stats
         {
-            public int Words { get; }
-            public int Points { get; }
-            public int Moves { get; }
-
             public Stats(int words, int points, int moves)
             {
                 Words = words;
@@ -111,23 +129,10 @@ namespace WordSearcher
             }
 
             public Stats(int points) => Points = points;
-        }
 
-        private void ReleaseUnmanagedResources()
-        {
-            // TODO release unmanaged resources here
-        }
-
-        public void Dispose()
-        {
-            ReleaseUnmanagedResources();
-            GC.SuppressFinalize(this);
-        }
-
-        ~Api()
-        {
-            ReleaseUnmanagedResources();
+            public int Words { get; }
+            public int Points { get; }
+            public int Moves { get; }
         }
     }
-
 }
